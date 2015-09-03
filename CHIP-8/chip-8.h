@@ -17,6 +17,8 @@ public:
 	// Graphics
 	unsigned char gfx[2048];   // The screen is 64x32
 
+	// Keypad
+	uchar key[16];
 
 	bool drawFlag;
 };

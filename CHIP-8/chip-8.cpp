@@ -1,5 +1,121 @@
 #include "chip-8.h"
 
+#include <SDL.h>
+#include <SDL_audio.h>
+#include <queue>
+#include <cmath>
+
+const int AMPLITUDE = 28000;
+const int FREQUENCY = 44100;
+
+struct BeepObject
+{
+	double freq;
+	int samplesLeft;
+};
+
+class Beeper
+{
+private:
+	double v;
+	std::queue<BeepObject> beeps;
+public:
+	Beeper();
+	~Beeper();
+	void beep(double freq, int duration);
+	void generateSamples(Sint16 *stream, int length);
+	void wait();
+};
+
+void audio_callback(void*, Uint8*, int);
+
+Beeper::Beeper()
+{
+	SDL_AudioSpec desiredSpec;
+
+	desiredSpec.freq = FREQUENCY;
+	desiredSpec.format = AUDIO_S16SYS;
+	desiredSpec.channels = 1;
+	desiredSpec.samples = 2048;
+	desiredSpec.callback = audio_callback;
+	desiredSpec.userdata = this;
+
+	SDL_AudioSpec obtainedSpec;
+
+	// you might want to look for errors here
+	SDL_OpenAudio(&desiredSpec, &obtainedSpec);
+
+	// start play audio
+	SDL_PauseAudio(0);
+}
+
+Beeper::~Beeper()
+{
+	SDL_CloseAudio();
+}
+
+void Beeper::generateSamples(Sint16 *stream, int length)
+{
+	int i = 0;
+	while (i < length) {
+
+		if (beeps.empty()) {
+			while (i < length) {
+				stream[i] = 0;
+				i++;
+			}
+			return;
+		}
+		BeepObject& bo = beeps.front();
+
+		int samplesToDo = min(i + bo.samplesLeft, length);
+		bo.samplesLeft -= samplesToDo - i;
+
+		while (i < samplesToDo) {
+			stream[i] = AMPLITUDE * std::sin(v * 2 * M_PI / FREQUENCY);
+			i++;
+			v += bo.freq;
+		}
+
+		if (bo.samplesLeft == 0) {
+			beeps.pop();
+		}
+	}
+}
+
+void Beeper::beep(double freq, int duration)
+{
+	BeepObject bo;
+	bo.freq = freq;
+	bo.samplesLeft = duration * FREQUENCY / 1000;
+
+	SDL_LockAudio();
+	beeps.push(bo);
+	SDL_UnlockAudio();
+}
+
+Beeper beeper;
+
+void Beeper::wait()
+{
+	int size;
+	do {
+		SDL_Delay(20);
+		SDL_LockAudio();
+		size = beeps.size();
+		SDL_UnlockAudio();
+	} while (size > 0);
+}
+
+void audio_callback(void *_beeper, Uint8 *_stream, int _length)
+{
+	Sint16 *stream = (Sint16*)_stream;
+	int length = _length / 2;
+	Beeper* beeper = (Beeper*)_beeper;
+
+	beeper->generateSamples(stream, length);
+}
+
 // Font set
 unsigned char chip8_fontset[80] =
 {
@@ -46,9 +162,6 @@ uchar soundTimer;   // When this reaches 0 the buzzer makes a noise
 					// Stack
 ushort stack[16];   // The chip-8 stack of 16
 ushort sp;          // Stack pointer
-
-					// Keypad
-uchar key[16];
 
 Chip8::Chip8()
 {
@@ -97,25 +210,6 @@ void Chip8::init()
 	file.close();
 }
 
-uchar toKey[16] = {
-	0x30, // 0 -> X
-	0x31, // 1 -> 1
-	0x32, // 2 -> 2
-	0x33, // 3 -> 3
-	0x51, // 4 -> Q
-	0x57, // 5 -> W
-	0x45, // 6 -> E
-	0x41, // 7 -> A
-	0x53, // 8 -> S
-	0x44, // 9 -> D
-	0x5A, // A -> Z
-	0x43, // B -> C
-	0x34, // C -> 4
-	0x52, // D -> R
-	0x46, // E -> F
-	0x56  // F -> V
-};
-
 #include <stdarg.h>
 
 void print(const char *fmt, ...)
@@ -141,12 +235,6 @@ void print(const char *fmt, ...)
 
 void Chip8::emulate()
 {
-	// Get input
-	for (uint i = 0; i < 16; ++i)
-	{
-		key[i] = (GetKeyState(toKey[i]) & 0x8000) != 0;
-	}
-
 	// Fetch opcode
 	opcode = memory[pc] << 8 | memory[pc + 1];
 
@@ -379,8 +467,10 @@ void Chip8::emulate()
 		switch (opcode & 0x00FF)
 		{
 		case 0x009E: // EX9E: Skips the next instruction if the key stored in VX is pressed
-			if (key[V[(opcode & 0x0F00) >> 8]] != 0)
+			if (key[V[(opcode & 0x0F00) >> 8]] != 0) {
+				//key[V[(opcode & 0x0F00) >> 8]] = 0;
 				pc += 4;
+			}
 			else
 				pc += 2;
 			break;
@@ -388,8 +478,10 @@ void Chip8::emulate()
 		case 0x00A1: // EXA1: Skips the next instruction if the key stored in VX isn't pressed
 			if (key[V[(opcode & 0x0F00) >> 8]] == 0)
 				pc += 4;
-			else
+			else {
 				pc += 2;
+				//key[V[(opcode & 0x0F00) >> 8]] = 0;
+			}
 			break;
 
 		default:
@@ -509,8 +601,10 @@ void Chip8::emulate()
 
 	if (soundTimer > 0)
 	{
-		//if (soundTimer == 1)
-		//	cout << ("BEEP!");
+		if (soundTimer == 1) {
+			beeper.beep(600, 100);
+			beeper.wait();
+		}
 		soundTimer--;
 	}
 }
